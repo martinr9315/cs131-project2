@@ -1,30 +1,8 @@
-from enum import Enum
 from intbase import InterpreterBase, ErrorType
 from env_v2 import EnvironmentManager
 from tokenize import Tokenizer
 from func_v2 import FunctionManager
-
-# Enumerated type for our different language data types
-class Type(Enum):
-  INT = 1
-  BOOL = 2
-  STRING = 3
-
-# Represents a value, which has a type and its value
-class Value:
-  def __init__(self, type, value = None):
-    self.t = type
-    self.v = value
-
-  def value(self):
-    return self.v
-
-  def set(self, other):
-    self.t = other.t
-    self.v = other.v
-
-  def type(self):
-    return self.t
+from val_v2 import Value, Type
 
 # Main interpreter class
 class Interpreter(InterpreterBase):
@@ -46,6 +24,7 @@ class Interpreter(InterpreterBase):
 
     # main interpreter run loop
     while not self.terminate:
+    #   print(self.env_manager)
       self._process_line()
 
   def _process_line(self):
@@ -59,6 +38,8 @@ class Interpreter(InterpreterBase):
     args = tokens[1:]
 
     match tokens[0]:
+      case InterpreterBase.VAR_DEF:
+        self._declare(args)
       case InterpreterBase.ASSIGN_DEF:
         self._assign(args)
       case InterpreterBase.FUNCCALL_DEF:
@@ -83,13 +64,28 @@ class Interpreter(InterpreterBase):
   def _blank_line(self):
     self._advance_to_next_statement()
 
-  def _assign(self, tokens):
-   if len(tokens) < 2:
-     super().error(ErrorType.SYNTAX_ERROR,"Invalid assignment statement") #no
-   vname = tokens[0]
-   value_type = self._eval_expression(tokens[1:])
-   self._set_value(tokens[0], value_type)
-   self._advance_to_next_statement()
+  def _declare(self, args):
+    if len(args) < 2:
+     super().error(ErrorType.SYNTAX_ERROR,"Invalid variable statement") #no
+    default_values = {'int':'0', 'bool':'False', 'string':'""'}
+    value = self._get_value(default_values[args[0]])
+    for var in args[1:]:
+        if self.env_manager.get(var, only_curr_scope=True):
+            super().error(ErrorType.NAME_ERROR,f"Redefined variable {var}", self.ip) #!
+        self.env_manager.set(var, value, only_curr_scope=True)
+    self._advance_to_next_statement()
+
+  def _assign(self, args): # needs to assign to the one it finds 
+    if len(args) < 2:
+        super().error(ErrorType.SYNTAX_ERROR,"Invalid assignment statement") #no
+    vname = args[0]
+    current_val = self._get_value(vname)
+    value_type = self._eval_expression(args[1:])
+    if (current_val.t == value_type.t):
+        self._set_value(vname, value_type)
+        self._advance_to_next_statement()
+    else:
+        super().error(ErrorType.TYPE_ERROR,"Variable type and expression type do not match ", self.ip) #!
 
   def _funccall(self, args):
     if not args:
@@ -104,14 +100,33 @@ class Interpreter(InterpreterBase):
       self._strtoint(args[1:])
       self._advance_to_next_statement()
     else:
+      funcname = args[0]
       self.return_stack.append(self.ip+1)
-      self.ip = self._find_first_instruction(args[0])
+      # set up new scope w/ passed values
+      formal_parameters = self._get_function_parameters(funcname)
+      actual_parameters = {}
+      for i, para in enumerate(args[1:]):
+        value_to_pass = self._get_value(para)
+        # check if formal parameter and actual parameter types match
+        if not self._ref_type_checker(value_to_pass, formal_parameters[i][1]):
+        # if value_to_pass.t != formal_parameters[i][1].t: # TODO: update this so ref versions are ok 
+          super().error(ErrorType.TYPE_ERROR,f"Mismatching types {value_to_pass.t} and {formal_parameters[i][1].t}", self.ip) #!
+        actual_parameters[formal_parameters[i][0]] = value_to_pass
+    #   print(actual_parameters)
+
+      # set result to default at function level
+      return_var = self._get_function_return_var(funcname)
+      actual_parameters["this_is_the_reserved_result_variable"] = return_var # this is hacky but will do for now
+      self.env_manager.new_func_scope(actual_parameters) # pass parameters by value
+    #   print(self.env_manager)
+      self.ip = self._find_first_instruction(funcname)
 
   def _endfunc(self):
     if not self.return_stack:  # done with main!
       self.terminate = True
     else:
       self.ip = self.return_stack.pop()
+      self.env_manager.pop_env()
 
   def _if(self, args):
     if not args:
@@ -119,10 +134,11 @@ class Interpreter(InterpreterBase):
     value_type = self._eval_expression(args)
     if value_type.type() != Type.BOOL:
       super().error(ErrorType.TYPE_ERROR,"Non-boolean if expression", self.ip) #!
-    if value_type.value():
+    if value_type.value(): # if condition true
+      self.env_manager.nest_new_scope() 
       self._advance_to_next_statement()
       return
-    else:
+    else: # if condition false
       for line_num in range(self.ip+1, len(self.tokenized_program)):
         tokens = self.tokenized_program[line_num]
         if not tokens:
@@ -133,9 +149,11 @@ class Interpreter(InterpreterBase):
     super().error(ErrorType.SYNTAX_ERROR,"Missing endif", self.ip) #no
 
   def _endif(self):
+    self.env_manager.remove_innermost_scope()
     self._advance_to_next_statement()
 
   def _else(self):
+    self.env_manager.nest_new_scope() 
     for line_num in range(self.ip+1, len(self.tokenized_program)):
       tokens = self.tokenized_program[line_num]
       if not tokens:
@@ -146,12 +164,30 @@ class Interpreter(InterpreterBase):
     super().error(ErrorType.SYNTAX_ERROR,"Missing endif", self.ip) #no
 
   def _return(self,args):
-    if not args:
-      self._endfunc()
-      return
-    value_type = self._eval_expression(args)
-    self._set_value(InterpreterBase.RESULT_DEF, value_type)   # return always passed back in result
+    result_var = self._get_value("this_is_the_reserved_result_variable")
+    if result_var == 'void': # TODO: clean up this logic
+        if args:
+            super().error(ErrorType.TYPE_ERROR,"Return type incompatible with function declaration", self.ip) #!
+        else:
+            self._endfunc()
+            return
+    if args:
+        value_type = self._eval_expression(args)
+    else:
+        value_type = result_var
+    if not self._ref_type_checker(value_type, result_var):
+        super().error(ErrorType.TYPE_ERROR,"Return type incompatible with function declaration", self.ip) #!
+    result_type = self._get_result_type(value_type.t)
+    self._set_value(result_type, value_type, -2)  # return passed back in resulti, resultb, results to scope above based on expression value
     self._endfunc()
+
+  def _get_result_type(self, t):
+    if t == Type.INT or t == Type.REFINT:
+      return 'resulti'
+    elif t == Type.BOOL or t == Type.REFBOOL:
+      return 'resultb'
+    elif t == Type.STRING or t == Type.REFSTRING:
+      return 'results'
 
   def _while(self, args):
     if not args:
@@ -164,6 +200,7 @@ class Interpreter(InterpreterBase):
       return
 
     # If true, we advance to the next statement
+    self.env_manager.nest_new_scope() # may cause problems 
     self._advance_to_next_statement()
 
   def _exit_while(self):
@@ -180,6 +217,7 @@ class Interpreter(InterpreterBase):
     super().error(ErrorType.SYNTAX_ERROR,"Missing endwhile", self.ip) #no
 
   def _endwhile(self, args):
+    self.env_manager.remove_innermost_scope() # is this how we want while to scope- resets every loop?
     while_indent = self.indents[self.ip]
     cur_line = self.ip - 1
     while cur_line >= 0:
@@ -205,7 +243,8 @@ class Interpreter(InterpreterBase):
     if args:
       self._print(args)
     result = super().get_input()
-    self._set_value(InterpreterBase.RESULT_DEF, Value(Type.STRING, result))   # return always passed back in result
+    self.env_manager.set('results', Value(Type.STRING, result), res=True)
+    # self._set_value('results', Value(Type.STRING, result))   # return always passed back in results
 
   def _strtoint(self, args):
     if len(args) != 1:
@@ -213,7 +252,8 @@ class Interpreter(InterpreterBase):
     value_type = self._get_value(args[0])
     if value_type.type() != Type.STRING:
       super().error(ErrorType.TYPE_ERROR,"Non-string passed to strtoint", self.ip) #!
-    self._set_value(InterpreterBase.RESULT_DEF, Value(Type.INT, int(value_type.value())))   # return always passed back in result
+    self.env_manager.set('resulti', Value(Type.INT, int(value_type.value())), res=True) 
+    # self._set_value('resulti', Value(Type.INT, int(value_type.value())))   # return always passed back in resulti
 
   def _advance_to_next_statement(self):
     # for now just increment IP, but later deal with loops, returns, end of functions, etc.
@@ -255,11 +295,24 @@ class Interpreter(InterpreterBase):
   def _compute_indentation(self, program):
     self.indents = [len(line) - len(line.lstrip(' ')) for line in program]
 
+  def _get_function_parameters(self, funcname):
+    func_info = self.func_manager.get_function_info(funcname)
+    if func_info == None:
+      super().error(ErrorType.NAME_ERROR,f"Unable to locate {funcname} function", self.ip) #!
+    return func_info.inputs
+
   def _find_first_instruction(self, funcname):
     func_info = self.func_manager.get_function_info(funcname)
     if func_info == None:
       super().error(ErrorType.NAME_ERROR,f"Unable to locate {funcname} function", self.ip) #!
     return func_info.start_ip
+
+  def _get_function_return_var(self, funcname):
+    func_info = self.func_manager.get_function_info(funcname)
+    if func_info == None:
+      super().error(ErrorType.NAME_ERROR,f"Unable to locate {funcname} function", self.ip) #!
+    return func_info.return_var
+
 
   # given a token name (e.g., x, 17, True, "foo"), give us a Value object associated with it
   def _get_value(self, token):
@@ -275,10 +328,12 @@ class Interpreter(InterpreterBase):
     if value  == None:
       super().error(ErrorType.NAME_ERROR,f"Unknown variable {token}", self.ip) #!
     return value
-
   # given a variable name and a Value object, associate the name with the value
-  def _set_value(self, varname, value_type):
-    self.env_manager.set(varname,value_type)
+  def _set_value(self, varname, value, scope=None): # TODO: use kwargs
+    if scope is None:
+        self.env_manager.set(varname, value)
+    else:
+        self.env_manager.set(varname, value, scope)
 
   # evaluate expressions in prefix notation: + 5 * 6 x
   def _eval_expression(self, tokens):
@@ -288,7 +343,8 @@ class Interpreter(InterpreterBase):
       if token in self.binary_op_list:
         v1 = stack.pop()
         v2 = stack.pop()
-        if v1.type() != v2.type():
+        if not self._ref_type_checker(v1, v2):
+        # if v1.type() != v2.type():
           super().error(ErrorType.TYPE_ERROR,f"Mismatching types {v1.type()} and {v2.type()}", self.ip) #!
         operations = self.binary_ops[v1.type()]
         if token not in operations:
@@ -296,9 +352,9 @@ class Interpreter(InterpreterBase):
         stack.append(operations[token](v1,v2))
       elif token == '!':
         v1 = stack.pop()
-        if v1.type() != Type.BOOL:
+        if v1.type() != Type.BOOL and v1.type() != Type.REFBOOL:
           super().error(ErrorType.TYPE_ERROR,f"Expecting boolean for ! {v1.type()}", self.ip) #!
-        stack.append(Value(Type.BOOL, not v1.value()))
+        stack.append(Value(v1.type(), not v1.value()))
       else:
         value_type = self._get_value(token)
         stack.append(value_type)
@@ -307,3 +363,217 @@ class Interpreter(InterpreterBase):
       super().error(ErrorType.SYNTAX_ERROR,f"Invalid expression", self.ip) #no
 
     return stack[0]
+
+  def _ref_type_checker(self, v1, v2):
+    if v1.type() != v2.type():
+        if v1.type() in [Type.INT, Type.REFINT] and v2.type() in [Type.INT, Type.REFINT]:
+            return True
+        elif v1.type() in [Type.STRING, Type.REFSTRING] and v2.type() in [Type.STRING, Type.REFSTRING]:
+            return True
+        elif v1.type() in [Type.BOOL, Type.REFBOOL] and v2.type() in [Type.BOOL, Type.REFBOOL]:
+            return True
+        else:
+            return False
+    return True
+
+
+def main():
+    input = [
+    'func main void',
+    '    var int a',
+    '    assign a 1',
+    '    funccall test a',
+    'endfunc',
+    'func test arg:refint void',
+    '    var int arg',
+    '    funccall print arg',
+    'endfunc']
+
+    i = Interpreter(trace_output=True)
+    i.run(input)
+
+main()
+
+# 'func main void',
+# ' var int v1',
+# ' assign v1 + 20 True',
+# ' funccall print v1',
+# 'endfunc'
+
+# 'func main void',
+# '  var string s',
+# '  var int n',
+# '  funccall input "Enter a number: "',
+# '  funccall strtoint results',
+# '  assign n + resulti 1',
+# '  funccall print n',
+# 'endfunc'
+
+# 'func main void',
+# ' var int v1',
+# ' assign v1 + 20 True',
+# ' funccall print v1',
+# 'endfunc'
+
+
+# 'func foo x:int int',
+# ' return x',
+# 'endfunc',
+# '',
+# 'func main void',
+# ' var int a',
+# ' assign a 5',
+# ' funccall foo a',
+# ' assign resulti 10',
+# ' funccall print a ',
+# ' assign a 20',
+# ' funccall print resulti',
+# 'endfunc'
+
+# 'func main void',
+# '  var int a',
+# '  assign a 5',
+# '  if True',
+# '   funccall print a',
+# '   var string b',
+# '   assign b "foobar"',
+# '   if True',
+# '    funccall print a ',
+# '    funccall print b',
+# '    var int b',
+# '    assign b 1',
+# '    while > b 0',
+# '     var bool c',
+# '     assign c True',
+# '     funccall print a " " b " " c',
+# '     assign b - b 1',
+# '    endwhile',
+# '   endif',
+# '   funccall print b',
+# '  endif',
+# 'endfunc'
+
+# ['func ifunc n:int int',
+# ' return n ',
+# 'endfunc',
+# ' ',
+# 'func sfunc s:string string',
+# ' return s',
+# 'endfunc',
+# '',
+# 'func bfunc b:bool bool',
+# ' return b',
+# 'endfunc',
+# '',
+# 'func main void',
+# '  var int i',
+# '  var string s',
+# '  var bool b',
+# '',
+# '  funccall ifunc 42',
+# '  assign i resulti',
+# '  funccall print i',
+# ' ',
+# '  funccall sfunc "foo"',
+# '  assign s results',
+# '  funccall print s',
+# ' ',
+# '  funccall bfunc True',
+# '  assign b resultb',
+# '  funccall print b',
+# ' ',
+# 'endfunc']
+
+
+# 'func main void',
+# ' var int a b',
+# ' assign a 5',
+# ' assign b 100',
+# ' funccall print a " " b',
+# ' if True',
+# '  assign a 10',
+# '  funccall print a " " b',
+# '  var int a',
+# '  assign a 6',
+# '  funccall print a " " b',
+# '  var int b',
+# '  assign b -1',
+# '  funccall print a " " b',
+# ' endif',
+# ' funccall print a " " b',
+# 'endfunc'
+
+
+
+
+# 'func main void',
+# ' var int a b',
+# ' assign a 5',
+# ' assign b 100',
+# ' funccall print a " " b',
+# ' if True',
+# '  assign a 10',
+# '  funccall print a " " b',
+# '  var int a',
+# '  assign a 6',
+# '  funccall print a " " b',
+# '  var int b',
+# '  assign b -1',
+# '  funccall print a " " b',
+# ' endif',
+# ' funccall print a " " b',
+# 'endfunc'
+
+
+# 'func main void',
+# '  var int x',
+# '  var string y',
+# '  var bool z',
+# '  assign x 42',
+# '  assign y "foo"',
+# '  assign z True ',
+# '  funccall foo x y z',
+# '  funccall print x " " y " " z',
+# '  funccall bletch',
+# '  funccall bar resulti',
+# '  funccall print resulti',
+# 'endfunc',
+# '',
+# 'func foo a:refint b:refstring c:refbool void',
+# ' assign a -42',
+# ' assign b "bar"',
+# ' assign c False',
+# 'endfunc',
+# '',
+# 'func bletch int',
+# ' return 100',
+# 'endfunc',
+# '',
+# 'func bar a:refint void',
+# ' assign a -100 ',
+# 'endfunc'
+
+
+# 'func main void',
+# '    var int n',
+# '    assign n 4',
+# '    var string result',
+# '    assign result "a"',
+# '    funccall double result n',
+# '    funccall print result',
+# '',
+# '    assign n 6',
+# '    assign result "##"',
+# '    funccall double result n',
+# '    funccall print result',
+# '',
+# 'endfunc',
+# '',
+# 'func double result:refstring n:int void',
+# '    if == n 0',
+# '        return',
+# '    endif',
+# '    assign n - n 1',
+# '    assign result + result result',
+# '    funccall double result n',
+# 'endfunc'

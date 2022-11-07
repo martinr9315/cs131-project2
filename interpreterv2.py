@@ -81,8 +81,8 @@ class Interpreter(InterpreterBase):
     vname = args[0]
     current_val = self._get_value(vname)
     value_type = self._eval_expression(args[1:])
-    if (current_val.t == value_type.t):
-        self._set_value(vname, value_type)
+    if self._ref_type_checker(current_val, value_type):
+        self._set_value(vname, Value(current_val.type(), value_type.value(), current_val.ref()))
         self._advance_to_next_statement()
     else:
         super().error(ErrorType.TYPE_ERROR,"Variable type and expression type do not match ", self.ip) #!
@@ -107,12 +107,14 @@ class Interpreter(InterpreterBase):
       actual_parameters = {}
       for i, para in enumerate(args[1:]):
         value_to_pass = self._get_value(para)
-        # check if formal parameter and actual parameter types match
-        if not self._ref_type_checker(value_to_pass, formal_parameters[i][1]):
-        # if value_to_pass.t != formal_parameters[i][1].t: # TODO: update this so ref versions are ok 
-          super().error(ErrorType.TYPE_ERROR,f"Mismatching types {value_to_pass.t} and {formal_parameters[i][1].t}", self.ip) #!
-        actual_parameters[formal_parameters[i][0]] = value_to_pass
-    #   print(actual_parameters)
+        if not self._ref_type_checker(value_to_pass, formal_parameters[i][1]):  # check if formal parameter and actual parameter types match
+          super().error(ErrorType.TYPE_ERROR,f"Mismatching types {value_to_pass.type()} and {formal_parameters[i][1].type()}", self.ip) #!
+        if formal_parameters[i][1].type() in [Type.REFINT, Type.REFBOOL, Type.REFSTRING]:
+            actual_parameters[formal_parameters[i][0]] = Value(formal_parameters[i][1].type(), value_to_pass.value(), (para, value_to_pass))
+        else:
+            actual_parameters[formal_parameters[i][0]] = value_to_pass
+    #   for p, v in actual_parameters.items():
+    #     print(p,':', v)
 
       # set result to default at function level
       return_var = self._get_function_return_var(funcname)
@@ -125,6 +127,8 @@ class Interpreter(InterpreterBase):
     if not self.return_stack:  # done with main!
       self.terminate = True
     else:
+      # update references
+      self.env_manager.update_references()
       self.ip = self.return_stack.pop()
       self.env_manager.pop_env()
 
@@ -145,6 +149,8 @@ class Interpreter(InterpreterBase):
           continue
         if (tokens[0] == InterpreterBase.ENDIF_DEF or tokens[0] == InterpreterBase.ELSE_DEF) and self.indents[self.ip] == self.indents[line_num]:
           self.ip = line_num + 1
+          if tokens[0] == InterpreterBase.ELSE_DEF:
+              self.env_manager.nest_new_scope() 
           return
     super().error(ErrorType.SYNTAX_ERROR,"Missing endif", self.ip) #no
 
@@ -165,7 +171,7 @@ class Interpreter(InterpreterBase):
 
   def _return(self,args):
     result_var = self._get_value("this_is_the_reserved_result_variable")
-    if result_var == 'void': # TODO: clean up this logic
+    if result_var == 'void':
         if args:
             super().error(ErrorType.TYPE_ERROR,"Return type incompatible with function declaration", self.ip) #!
         else:
@@ -291,6 +297,34 @@ class Interpreter(InterpreterBase):
      '!=': lambda a,b: Value(Type.BOOL, a.value()!=b.value()),
      '|': lambda a,b: Value(Type.BOOL, a.value() or b.value())
     }
+    self.binary_ops[Type.REFINT] = {
+     '+': lambda a,b: Value(Type.INT, a.value()+b.value()),
+     '-': lambda a,b: Value(Type.INT, a.value()-b.value()),
+     '*': lambda a,b: Value(Type.INT, a.value()*b.value()),
+     '/': lambda a,b: Value(Type.INT, a.value()//b.value()),  # // for integer ops
+     '%': lambda a,b: Value(Type.INT, a.value()%b.value()),
+     '==': lambda a,b: Value(Type.BOOL, a.value()==b.value()),
+     '!=': lambda a,b: Value(Type.BOOL, a.value()!=b.value()),
+     '>': lambda a,b: Value(Type.BOOL, a.value()>b.value()),
+     '<': lambda a,b: Value(Type.BOOL, a.value()<b.value()),
+     '>=': lambda a,b: Value(Type.BOOL, a.value()>=b.value()),
+     '<=': lambda a,b: Value(Type.BOOL, a.value()<=b.value()),
+    }
+    self.binary_ops[Type.REFSTRING] = {
+     '+': lambda a,b: Value(Type.STRING, a.value()+b.value()),
+     '==': lambda a,b: Value(Type.BOOL, a.value()==b.value()),
+     '!=': lambda a,b: Value(Type.BOOL, a.value()!=b.value()),
+     '>': lambda a,b: Value(Type.BOOL, a.value()>b.value()),
+     '<': lambda a,b: Value(Type.BOOL, a.value()<b.value()),
+     '>=': lambda a,b: Value(Type.BOOL, a.value()>=b.value()),
+     '<=': lambda a,b: Value(Type.BOOL, a.value()<=b.value()),
+    }
+    self.binary_ops[Type.REFBOOL] = {
+     '&': lambda a,b: Value(Type.BOOL, a.value() and b.value()),
+     '==': lambda a,b: Value(Type.BOOL, a.value()==b.value()),
+     '!=': lambda a,b: Value(Type.BOOL, a.value()!=b.value()),
+     '|': lambda a,b: Value(Type.BOOL, a.value() or b.value())
+    }
 
   def _compute_indentation(self, program):
     self.indents = [len(line) - len(line.lstrip(' ')) for line in program]
@@ -313,7 +347,6 @@ class Interpreter(InterpreterBase):
       super().error(ErrorType.NAME_ERROR,f"Unable to locate {funcname} function", self.ip) #!
     return func_info.return_var
 
-
   # given a token name (e.g., x, 17, True, "foo"), give us a Value object associated with it
   def _get_value(self, token):
     if not token:
@@ -328,6 +361,7 @@ class Interpreter(InterpreterBase):
     if value  == None:
       super().error(ErrorType.NAME_ERROR,f"Unknown variable {token}", self.ip) #!
     return value
+
   # given a variable name and a Value object, associate the name with the value
   def _set_value(self, varname, value, scope=None): # TODO: use kwargs
     if scope is None:
@@ -377,22 +411,135 @@ class Interpreter(InterpreterBase):
     return True
 
 
+'Verify that there are no corner cases where scopes are not entered/exited properly.'
+
+l = ['func main void',
+'  if True',
+'    while False',
+'        funccall print 1',
+'    endwhile',
+'  else',
+'     var int e',
+'     assign e -32',
+'  endif',
+'  funccall print e',
+'endfunc']
+
+
+results_test_case = [
+'func main void',
+'    assign a 9',
+'    funccall input "enter your name"',
+'    if True',
+'        funccall input "enter mid name "',
+'        funccall print results',
+'    endif',
+'    funccall print results',
+
+'endfunc']
+
+nesting_case = [
+'func main void',
+'  var int a',
+'  assign a 1',
+'  while < a 3',
+'    var int c',
+'    if == a 11',
+'      funccall print "never"',
+'    else',
+'      while < c 2',
+'        var int b',
+'        var bool a',
+'        funccall print "b " b',
+'        assign c + c 1',
+'        funccall print "c " c',
+'      endwhile',
+'      assign a + a 1',
+'    endif',
+'  endwhile',
+'  funccall print a',
+'endfunc']
+
+output_6 = [
+'func main void',
+' var int a',
+' assign a 5',
+' funccall foo a',
+' assign resulti 7',
+' funccall print a',
+'endfunc',
+'',
+'func foo b:refint int',
+' assign b + 1 b',
+' return b',
+'endfunc'
+]
+
+doublemod = [
+'func main void',
+'var int a',
+'funccall doublemod a a',
+'funccall print a',
+'endfunc',
+'',
+'func doublemod a:refint b:refint void',
+'assign a + a 5',
+'assign b + b 10',
+'endfunc']
+
+
 def main():
-    input = [
-    'func main void',
-    '    var int a',
-    '    assign a 1',
-    '    funccall test a',
-    'endfunc',
-    'func test arg:refint void',
-    '    var int arg',
-    '    funccall print arg',
-    'endfunc']
+    input = doublemod
 
     i = Interpreter(trace_output=True)
     i.run(input)
 
 main()
+
+'func main void',
+' var int a',
+' assign a 2',
+'endfunc',
+'',
+'func foo x:refint void',
+'  funccall bar x',
+'endfunc',
+'func bar y:refint void',
+'  funccall print y',
+'endfunc'
+
+
+
+#    'func main void',
+#     '    var int a',
+#     '    assign a 1 ',
+#     '    funccall test a True',
+#     '    funccall print a',
+#     'endfunc',
+#     'func test x:refint y:bool void',
+#     '    funccall print x " " y',
+#     '    assign x + x 1',
+#     '    funccall print x',
+#     'endfunc'
+
+# 'func foo a:int b:int c:int void',
+# '  assign a 1',
+# '  assign b 1',
+# '  assign c 1',
+# '  funccall print a " " b " " c',
+# 'endfunc',
+# '',
+# '',
+# 'func main void',
+# '  var int a b c',
+# '  assign a 2',
+# '  assign b 2',
+# '  assign c 2',
+# '  funccall print a " " b " " c',
+# '  funccall foo a b c',
+# '  funccall print a " " b " " c',
+# 'endfunc'
+
 
 # 'func main void',
 # ' var int v1',

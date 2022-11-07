@@ -8,7 +8,16 @@ class EnvironmentManager:
     # where outer list is function scopes, inner list is block scopes, dictionary contains the variables
 
   def __str__(self):
-    return self.environment.__str__()
+    s = ""
+    for func_scope in self.environment:
+      s += '['
+      for scope in func_scope:
+        s += '[{'
+        for k, v in scope.items():
+          s+=str(k)+':'+v.__str__()+' '
+        s += '}]'
+      s += ']'
+    return s
 
   # Gets the data associated a variable name
   def get(self, symbol, only_curr_scope=False):
@@ -18,6 +27,7 @@ class EnvironmentManager:
       data = env.get(symbol, None)
       if data is not None:
         return data
+    return None
 
   # Sets the data associated with a variable name
   def set(self, symbol, value, func_scope=-1, only_curr_scope=False, res=False):
@@ -31,6 +41,12 @@ class EnvironmentManager:
           return
     else:
       self.environment[func_scope][0].update({symbol:value})
+    
+  def update_references(self):
+    for env in self.environment[-1][::-1]:
+      for v in env.values():
+        if v!= 'void' and v.r is not None:
+          self.set(v.ref_var(), v.ref_info().update_only_val(v.value()), -2)
 
   def new_func_scope(self, params={}):
     self.environment.append([params])

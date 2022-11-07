@@ -19,22 +19,22 @@ class FuncInfo:
 class FunctionManager:
   def __init__(self, tokenized_program):
     self.func_cache = {}
-    self._cache_function_line_numbers(tokenized_program)
+    self._cache_function_info(tokenized_program)
 
   def get_function_info(self, func_name):
     if func_name not in self.func_cache:
       return None
     return self.func_cache[func_name]
 
-  def _cache_function_line_numbers(self, tokenized_program):
+  def _cache_function_info(self, tokenized_program):
     for line_num, line in enumerate(tokenized_program):
       if line and line[0] == InterpreterBase.FUNC_DEF:
         func_name = line[1]
         input_values = [(name,self._get_value_type(val)) for name, val in [input.split(":") for input in line[2:-1]]]
-        # TODO: edge case - error if multiple same var used as input?
         return_type = self._get_value_type(line[-1])
         func_info = FuncInfo(line_num + 1, input_values, return_type)   # function starts executing on line after funcdef
-        # print(func_info)
+        # for k,v in input_values:
+        #   print(v)
         self.func_cache[func_name] = func_info
   
   def _get_value_type(self, t):

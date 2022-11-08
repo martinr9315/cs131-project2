@@ -33,8 +33,6 @@ class FunctionManager:
         input_values = [(name,self._get_value_type(val)) for name, val in [input.split(":") for input in line[2:-1]]]
         return_type = self._get_value_type(line[-1])
         func_info = FuncInfo(line_num + 1, input_values, return_type)   # function starts executing on line after funcdef
-        # for k,v in input_values:
-        #   print(v)
         self.func_cache[func_name] = func_info
   
   def _get_value_type(self, t):

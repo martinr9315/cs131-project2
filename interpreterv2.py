@@ -113,8 +113,6 @@ class Interpreter(InterpreterBase):
             actual_parameters[formal_parameters[i][0]] = Value(formal_parameters[i][1].type(), value_to_pass.value(), (para, value_to_pass))
         else:
             actual_parameters[formal_parameters[i][0]] = value_to_pass
-    #   for p, v in actual_parameters.items():
-    #     print(p,':', v)
 
       # set result to default at function level
       return_var = self._get_function_return_var(funcname)
@@ -136,10 +134,11 @@ class Interpreter(InterpreterBase):
     if not args:
       super().error(ErrorType.SYNTAX_ERROR,"Invalid if syntax", self.ip) #no
     value_type = self._eval_expression(args)
-    if value_type.type() != Type.BOOL:
+    self.env_manager.nest_new_scope() 
+    if value_type.type() != Type.BOOL and value_type.type() != Type.REFBOOL:
       super().error(ErrorType.TYPE_ERROR,"Non-boolean if expression", self.ip) #!
     if value_type.value(): # if condition true
-      self.env_manager.nest_new_scope() 
+    #   self.env_manager.nest_new_scope() 
       self._advance_to_next_statement()
       return
     else: # if condition false
@@ -149,9 +148,9 @@ class Interpreter(InterpreterBase):
           continue
         if (tokens[0] == InterpreterBase.ENDIF_DEF or tokens[0] == InterpreterBase.ELSE_DEF) and self.indents[self.ip] == self.indents[line_num]:
           self.ip = line_num + 1
-          if tokens[0] == InterpreterBase.ELSE_DEF:
-              self.env_manager.nest_new_scope() 
           return
+        #   if tokens[0] == InterpreterBase.ELSE_DEF:
+        #     #   self.env_manager.nest_new_scope() 
     super().error(ErrorType.SYNTAX_ERROR,"Missing endif", self.ip) #no
 
   def _endif(self):
@@ -159,7 +158,7 @@ class Interpreter(InterpreterBase):
     self._advance_to_next_statement()
 
   def _else(self):
-    self.env_manager.nest_new_scope() 
+    # self.env_manager.nest_new_scope() 
     for line_num in range(self.ip+1, len(self.tokenized_program)):
       tokens = self.tokenized_program[line_num]
       if not tokens:
@@ -199,14 +198,14 @@ class Interpreter(InterpreterBase):
     if not args:
       super().error(ErrorType.SYNTAX_ERROR,"Missing while expression", self.ip) #no
     value_type = self._eval_expression(args)
-    if value_type.type() != Type.BOOL:
+    if value_type.type() != Type.BOOL and value_type.type() != Type.REFBOOL:
       super().error(ErrorType.TYPE_ERROR,"Non-boolean while expression", self.ip) #!
     if value_type.value() == False:
       self._exit_while()
       return
 
     # If true, we advance to the next statement
-    self.env_manager.nest_new_scope() # may cause problems 
+    self.env_manager.nest_new_scope() 
     self._advance_to_next_statement()
 
   def _exit_while(self):
@@ -256,7 +255,7 @@ class Interpreter(InterpreterBase):
     if len(args) != 1:
       super().error(ErrorType.SYNTAX_ERROR,"Invalid strtoint call syntax", self.ip) #no
     value_type = self._get_value(args[0])
-    if value_type.type() != Type.STRING:
+    if value_type.type() != Type.STRING and value_type.type() != Type.REFSTRING:
       super().error(ErrorType.TYPE_ERROR,"Non-string passed to strtoint", self.ip) #!
     self.env_manager.set('resulti', Value(Type.INT, int(value_type.value())), res=True) 
     # self._set_value('resulti', Value(Type.INT, int(value_type.value())))   # return always passed back in resulti
@@ -378,7 +377,6 @@ class Interpreter(InterpreterBase):
         v1 = stack.pop()
         v2 = stack.pop()
         if not self._ref_type_checker(v1, v2):
-        # if v1.type() != v2.type():
           super().error(ErrorType.TYPE_ERROR,f"Mismatching types {v1.type()} and {v2.type()}", self.ip) #!
         operations = self.binary_ops[v1.type()]
         if token not in operations:
